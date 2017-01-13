@@ -6,6 +6,7 @@ import numpy as np
 import cv2
 import sklearn
 import json
+from PIL import ImageOps
 import matplotlib.pyplot as plt
 #%matplotlib inline
 from keras.models import model_from_json
@@ -130,7 +131,7 @@ def load_csv():
            index+=1
     return image_paths, steering_angles
 
-def load_data(image_paths, steering_angles):
+def load_data_prev(image_paths, steering_angles):
       
     size = len(image_paths)
     #print("called load_data", size)
@@ -160,20 +161,63 @@ def load_data(image_paths, steering_angles):
     
     return X, y
 
-def data_generator(batch_size=1):
-    #print("called data_generator")
+def load_data(image_paths, steering_angles):
+   
+    x = []
+    y = []
     
-    image_paths, steering_angles = load_csv()
+    shape = imread(path+image_paths[0]).shape
+        
+    for i in range(0,len(image_paths)):
+        img = imread(path+image_paths[i])
+        #img2 = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        if(imgsize != shape):#resize if image size is not per your liking
+        #print("Resizing image")
+            img = cv2.resize(img,(imgsize[1],imgsize[0]))
+            
+            
+        imgarr = img_to_array(img)
+        
+        #crop image if needed
+        if(crop_s > 0 and crop_e > 0):
+            imgarr = imgarr[crop_s:crop_e:, :, :]
+        
+        
+        x.append(imgarr)
+        y.append(steering_angles[i])
+
+       
+        #flip images when road is curved
+        if(steering_angles[i] > 0.1 or steering_angles[i] < -0.1):
+            #print("flipping image, St angle is ", steering_angles[i])
+            x.append(imgarr[::-1])
+            y.append(steering_angles[i]*-1)
+        
+        
+        i+=1
+        
+        
+    return np.array(x), np.array(y)
+
+def data_generator(image_paths, steering_angles, batch_size=1):
+    print("called data_generator")
+    print("================")
     image_paths, steering_angles = shuffle_lists(image_paths, steering_angles)
     while True:
        for i in range(0,total,batch_size):
-           #image_paths, steering_angles = shuffle_lists(image_paths, steering_angles)
-           #X,y = load_data(image_paths[i:i+batch_size], steering_angles[i:i+batch_size])
            image_paths_s, steering_angles_s = shuffle_lists(image_paths[i:i+batch_size], steering_angles[i:i+batch_size])
            X,y = load_data(image_paths_s, steering_angles_s)
-           #print("yeilding X", X[0])
-           #print("yeilding y", y)
            yield (X, y)
+
+def validation_data_generator(image_paths, steering_angles):
+    print("called validation data_generator")
+    print("================")
+   
+    X,y = load_data(image_paths, steering_angles)
+      
+    return X, y 
+
 
 class TestCallback(Callback):
     def __init__(self, test_data):
@@ -183,12 +227,12 @@ class TestCallback(Callback):
         x, y = self.test_data
         loss, acc = self.model.evaluate(x, y, verbose=1)
         print('\nValidation loss: {}, acc: {}\n'.format(loss, acc))          
-        #ModelCheckpoint("model-{epoch:02d}.h5", monitor='val_loss', verbose=0, save_best_only=False, save_weights_only=False, mode='auto', period=1)
-        
+   
+               
 # run the training process
 path = "data/"
 filename = "driving_log.csv"
-model_name = "iter10"
+model_name = "iter12"
 
 #Org - 160x320x3
 #resize - 80% 
@@ -203,19 +247,30 @@ final_input_shape = (72,256,3)
 
 
 image_paths, steering_angles = load_csv()
+ 
 
-total = len(image_paths)
-batch_size = 10
-epochs = 3
+image_paths, steering_angles = shuffle_lists(image_paths, steering_angles)  
 
-model = get_model_nv()
-model.summary()  
+split = round(0.33*len(image_paths))
 
+X_val = image_paths[0:split]
+y_val = steering_angles[0:split]
+
+
+X_train = image_paths[split:len(image_paths)]
+y_train = steering_angles[split:len(image_paths)]
 
 X_test, y_test = load_data(image_paths[50:60], steering_angles[50:60])
-  
-history = model.fit_generator(data_generator(batch_size), samples_per_epoch = total, nb_epoch = epochs,
-verbose=1, callbacks=[TestCallback((X_test, y_test))], validation_data=None, class_weight=None, nb_worker=1)
+
+total = len(X_train)
+batch_size = 20
+epochs = 20
+
+model = get_model_nv()
+#model.summary() 
+history = model.fit_generator(data_generator(X_train, y_train, batch_size), samples_per_epoch = total, nb_epoch = epochs,
+verbose=1, callbacks=[TestCallback((X_test, y_test))], validation_data=validation_data_generator(X_val, y_val), nb_val_samples=len(X_val), class_weight=None, nb_worker=1)
+
 
 # validate
 print(model.predict(X_test))
@@ -223,6 +278,8 @@ print(model.predict(X_test))
 print("Original values...")
 for i in range(len(y_test)):
     print(y_test[i])
+
+
 
 # serialize weights to HDF5
 model.save_weights(model_name+".h5")
